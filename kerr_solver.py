@@ -1,6 +1,7 @@
+from __future__ import annotations
 import math
 from dataclasses import dataclass
-from typing import List, Iterable
+from typing import List
 
 @dataclass
 class State:
@@ -14,20 +15,14 @@ class State:
     pphi: float
 
     def convert_state_to_vector(self) -> List[float]:
-        return [self.t, self.r, self.theta, self.phi,
-                self.pt, self.pr, self.ptheta, self.pphi]
+        return [self.t, self.r, self.theta, self.phi, self.pt, self.pr, self.theta, self.pphi]
 
     @staticmethod
-    def convert_vector_to_state(vector: Iterable[float]) -> State:
-        try:
-            values = list[vector]
-        except TypeError:
-            raise TypeError("Vector must be an iterable of 8 numberic values.")
+    def convert_vector_to_state(vector: List[float]) -> State:
+        if len(vector) != 8:
+            raise ValueError(f"Expected 8 values, but got {len(vector)}.")
         
-        if len(values) != 8:
-            raise ValueError(f"Expected 8 values, but got {len(values)}.")
-        
-        for index, value in enumerate(values):
+        for index, value in enumerate(vector):
             if not isinstance(value, (int, float)):
                 raise TypeError(f"Element at index {index} is not a number: {value!r}.")
         
@@ -82,15 +77,99 @@ def derivatives(state: State, black_hole_mass: float, black_hole_spin: float) ->
     eps: float = 1e-5
 
     dx: List[float] = [sum(ginv[i][j] * mom[j] for j in range(4)) for i in range(4)]
-    dp: List[float] = [dh_dxi(i, state, eps, black_hole_mass, black_hole_spin) for i in range(4)]
+    dp: List[float] = [-dh_dxi(i, state, eps, black_hole_mass, black_hole_spin) for i in range(4)]
 
     return dx + dp
     
+# ---------------- RK4 ----------------
+
+def rk4_step_vector(function: callable[[State, float, float], List[float]],
+             y: List[float],
+             black_hole_mass: float,
+             black_hole_spin: float,
+             integration_step: float
+             ) -> List[float]:
+    k1 = function(State.convert_vector_to_state(y), black_hole_mass, black_hole_spin)
+    
+    y2: List[float] = [y[i] + 0.5 * integration_step * k1[i] for i in range(len(y))]
+    k2 = function(State.convert_vector_to_state(y2), black_hole_mass, black_hole_spin)
+
+    y3: List[float] = [y[i] + 0.5 * integration_step * k2[i] for i in range(len(y))]
+    k3 = function(State.convert_vector_to_state(y3), black_hole_mass, black_hole_spin)
+
+    y4: List[float] = [y[i] + 0.5 * integration_step * k3[i] for i in range(len(y))]
+    k4 = function(State.convert_vector_to_state(y4), black_hole_mass, black_hole_spin)
+
+    return [
+        y[i] + (integration_step / 6.0) * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) for i in range(len(y))
+    ]
+
+def check_if_hit_disk(state: State, inner_disk_radius: float, outer_disk_radius: float, tolerance: float = 1e-2) -> bool:
+    # now disk is located at theta = pi / 2
+    # in future I will add height to the disk so this function will require change
+    if abs(state.theta - math.pi / 2.0) < tolerance:
+        if inner_disk_radius <= state.r <= outer_disk_radius:
+            return True
+    return False
+
+def integrate(state: State,
+              black_hole_mass: float,
+              black_hole_spin: float,
+              number_of_steps: int,
+              initial_integration_step: float,
+              tolerance: float = 1e-5,
+              minimal_integration_step: float = 1e-5,
+              maximal_integration_step: float = 1.0,
+              inner_disk_radius: float | None = None,
+              outer_disk_radius: float | None = None
+              ) -> List[State]:
+    
+    """Adaptive RK4 using step-doubling error estimate."""
+    trajectory: List[State] = [state]
+    y: List[float] = state.convert_state_to_vector()
+    integration_step = initial_integration_step
+
+    for _ in range(number_of_steps):
+        current_state = State.convert_vector_to_state(y)
+        # Check for disk collision
+        if inner_disk_radius is not None and outer_disk_radius is not None:
+            if check_if_hit_disk(current_state, inner_disk_radius, outer_disk_radius):
+                print(f"Particle hits the disk - stopping integration")
+                break
+
+        # Full step 
+        y_full: List[float] = rk4_step_vector(derivatives, y, black_hole_mass, black_hole_spin, integration_step)
+
+        # Two half steps
+        y_half: List[float] = rk4_step_vector(derivatives, y, black_hole_mass, black_hole_spin, integration_step / 2.0)
+        y_half_2: List[float] = rk4_step_vector(derivatives, y_half, black_hole_mass, black_hole_spin, integration_step / 2.0)
+
+        # Error estimate
+        error: float = max(abs(y_full[i] - y_half_2[i]) for i in range(len(y)))
+
+        if error < tolerance or integration_step <= minimal_integration_step:
+            # Accept Step
+            y = y_half_2
+            trajectory.append(State.convert_vector_to_state(y))
+
+            # Increase step if error is to small
+            if error == 0:
+                scale = 2.0
+            else: 
+                scale = 0.9 * (tolerance / error) ** 0.2
+            
+            integration_step = min(maximal_integration_step, integration_step * scale)
+        else:
+            # Reject step and reduce h
+            scale = max(0.1, 0.9 * (tolerance / error) ** 0.25)
+            integration_step = max(minimal_integration_step, integration_step * scale)
+    
+    return trajectory
 
 if __name__ == "__main__":
     black_hole_mass: float = 1.0
     black_hole_spin: float = 0.9
-    initial_intergration_step: float = 0.1
+    initial_integration_step: float = 0.1
     number_of_points_for_trajectory: int = 10000
     inner_disk_radius: float = 8.0
     outer_disk_radius: float = 20.0
@@ -106,4 +185,5 @@ if __name__ == "__main__":
         pphi=3.0
     )
 
-    trajectory: List[float] = []
+    trajectory: List[State] = integrate(initial_state, black_hole_mass, black_hole_spin, number_of_points_for_trajectory, initial_integration_step)
+    print(trajectory)
