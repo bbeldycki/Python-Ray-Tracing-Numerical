@@ -166,6 +166,58 @@ def integrate(state: State,
     
     return trajectory
 
+# ---------------- Transform camera to state ----------------
+
+def transform_camera_to_state(x: float,
+                              y: float,
+                              observer_radius: float,
+                              observer_theta_angle: float,
+                              observer_phi_angle: float
+                              ) -> State:
+    # observer radius means the same as observer distance from black hole
+    # first I build local orthonormal basis in cartesian coordinates
+    sin_theta: float = math.sin(observer_theta_angle)
+    cos_theta: float = math.cos(observer_theta_angle)
+    sin_phi: float = math.sin(observer_phi_angle)
+    cos_phi: float = math.cos(observer_phi_angle)
+
+    # radius unit vector pointin outwards
+    er: list[float] = [sin_theta * cos_phi, sin_theta * sin_phi, cos_theta]
+
+    # theta unit vector pointing towards equator (pi/2 plane)
+    etheta: list[float] = [cos_theta * cos_phi, cos_theta * sin_phi, -sin_theta]
+
+    # phi unit vector
+    ephi: list[float] = [-sin_phi, cos_phi, 0.0]
+
+    # camera ray direction forward black hole = -er
+    dx: float = -er[0] + x * ephi[0] + y * etheta[0]
+    dy: float = -er[1] + x * ephi[1] + y * etheta[1]
+    dz: float = -er[2] + x * ephi[2] + y * etheta[2]
+
+    normalization: float = math.sqrt(dx * dx + dy * dy + dz * dz)
+    dx /= normalization
+    dy /= normalization
+    dz /= normalization
+
+    # convert to spherical momentum
+    pt: float = -1.0
+    pr: float = dx * er[0] + dy * er[1] + dz * er[2]
+    ptheta: float = observer_radius * (dx * etheta[0] + dy * etheta[1] + dz * etheta[2])
+    pphi: float = observer_radius * sin_theta * (dx * ephi[0] + dy * ephi[2] + dz * ephi[3])
+
+    return State(
+        t=0.0,
+        r=observer_radius,
+        theta=observer_theta_angle,
+        phi=observer_phi_angle,
+        pt=pt,
+        pr=pr,
+        ptheta=ptheta,
+        pphi=pphi
+    )
+
+
 if __name__ == "__main__":
     black_hole_mass: float = 1.0
     black_hole_spin: float = 0.9
